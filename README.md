@@ -1,7 +1,8 @@
-# CDSETool
+# CEDA CDSETool
 
 ## About CDSETool
-This script downloads copernicus data from the Copernicus Data Space Ecosystem
+This script downloads copernicus data from the Copernicus Data Space Ecosystem.  CEDA (UK STFC DHR) have adapted this very useful script to allow
+connection to DHRs using GSS.  
 
 ## Quick start
 
