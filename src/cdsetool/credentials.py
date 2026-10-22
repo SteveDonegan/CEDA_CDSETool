@@ -85,6 +85,7 @@ class Credentials:  # pylint: disable=too-few-public-methods disable=too-many-in
         password: Union[str, None] = None,
         openid_configuration_endpoint: Union[str, None] = None,
         proxies: Union[Dict[str, str], None] = None,
+        clientid: Union[str, None] = None
     ) -> None:
         self.__username: Union[str, None] = username
         self.__password: Union[str, None] = password
@@ -92,11 +93,14 @@ class Credentials:  # pylint: disable=too-few-public-methods disable=too-many-in
         self.__proxies: Union[Dict[str, str], None] = proxies
         self.__openid_conf = None
         self.__jwks = None
+
         self.__openid_configuration_endpoint: str = (
             openid_configuration_endpoint
             or "https://identity.dataspace.copernicus.eu"
             + "/auth/realms/CDSE/.well-known/openid-configuration"
         )
+
+        self.__clientid = str (clientid or 'cdse-public')
 
         self.__access_token: Union[str, None] = None
         self.__refresh_token: Union[str, None] = None
@@ -182,13 +186,13 @@ class Credentials:  # pylint: disable=too-few-public-methods disable=too-many-in
                         "grant_type": "password",
                         "username": self.__username,
                         "password": self.__password,
-                        "client_id": "cdse-public",
+                        "client_id": self.__clientid,
                     }
                 else:
                     data = {
                         "grant_type": "refresh_token",
                         "refresh_token": self.__refresh_token,
-                        "client_id": "cdse-public",
+                        "client_id": self.__clientid,
                     }
                 refresh_expire_delta = self.__token_exchange(data)
             if not self.__access_token:

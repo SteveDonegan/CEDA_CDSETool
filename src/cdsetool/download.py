@@ -145,6 +145,12 @@ def download_feature(  # pylint: disable=too-many-return-statements
     collection = feature.get("Collection")
     download_full = options.get("filter_pattern") is None
 
+    #provide specific non-CDSE endpoint i.e. ceda dhr
+    if options.get('endpoint') is None:
+        endpoint = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+    else:
+        endpoint = f"{options.get('endpoint')}/odata/v1/Products"
+
     try:
         manifest_filename = "" if download_full else MANIFEST_FILENAMES[collection]
     except KeyError:
@@ -156,9 +162,9 @@ def download_feature(  # pylint: disable=too-many-return-statements
     # Prepare to download full product, or manifest file if filter_pattern is used
     filename = title + ".zip" if download_full else manifest_filename
     url = (
-        _get_feature_url(feature)
+        _get_feature_url(feature, endpoint)
         if download_full
-        else _get_odata_url(feature["Id"], title, filename)
+        else _get_odata_url(feature["Id"], title, filename, endpoint)
     )
     if not url or not title:
         log.debug(f"Bad URL ('{url}') or title ('{title}')")
@@ -186,7 +192,7 @@ def download_feature(  # pylint: disable=too-many-return-statements
             output_file = os.path.join(temp_product_path, file)
             os.makedirs(os.path.dirname(output_file), exist_ok=True)
             if not download_file(
-                _get_odata_url(feature["Id"], title, str(file)),
+                _get_odata_url(feature["Id"], title, str(file), endpoint),
                 Path(output_file),
                 options,
             ):
@@ -228,28 +234,35 @@ def download_features(
         options["monitor"].stop()
 
 
-def _get_feature_url(feature) -> str:
+def _get_feature_url(feature, endpoint:str) -> str:
     """
     Generate OData download URL for a feature from its ID.
     """
     feature_id = feature.get("Id")
+
+    '''
+                "https://download.dataspace.copernicus.eu"
+                f"/odata/v1/Products({feature_id})/$value"'''
+
     return (
         (
-            "https://download.dataspace.copernicus.eu"
-            f"/odata/v1/Products({feature_id})/$value"
+            f"{endpoint}({feature_id})/$value"            
         )
         if feature_id
         else ""
     )
 
 
-def _get_odata_url(product_id: str, product_name: str, href: str) -> str:
+def _get_odata_url(product_id: str, product_name: str, href: str, endpoint:str) -> str:
     """
     Convert href, describing file location in manifest file, to an OData download URL.
     """
-    odata_url = "https://download.dataspace.copernicus.eu/odata/v1"
+    #odata_url = "https://download.dataspace.copernicus.eu/odata/v1"
+    odata_url = endpoint
+
     path = "/".join([f"Nodes({item})" for item in href.split("/")])
-    return f"{odata_url}/Products({product_id})/Nodes({product_name})/{path}/$value"
+    #return f"{odata_url}/Products({product_id})/Nodes({product_name})/{path}/$value"
+    return f"{odata_url}({product_id})/Nodes({product_name})/{path}/$value"
 
 
 def _follow_redirect(url: str, session: Session) -> str:

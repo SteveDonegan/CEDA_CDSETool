@@ -18,7 +18,11 @@ from requests.exceptions import ChunkedEncodingError
 from urllib3.exceptions import ProtocolError
 
 from cdsetool._attributes import ATTRIBUTES
-from cdsetool.credentials import Credentials
+from cdsetool.credentials import (
+    Credentials,
+    TokenClientConnectionError,
+    TokenExpiredSignatureError,
+)
 from cdsetool.logger import NoopLogger
 
 SearchTermValue = Union[str, int, float, bool, date, datetime]
@@ -170,12 +174,24 @@ class FeatureQuery:  # pylint: disable=too-many-instance-attributes
         self.proxies = proxies
         self._max_attempts = opts.get("max_attempts", 10)
         self.log = opts.get("logger") or NoopLogger()
+        self.credentials = opts.get("creds_file")
+        
         self.collection = collection
         self.search_terms = search_terms
         # Option to expand Attributes for product metadata (default: False)
         self.expand_attributes = opts.get("expand_attributes", False)
         self._initial_skip = _to_int(search_terms.get("skip", 0))
         self._top = _to_int(search_terms.get("top", MAX_BATCH_SIZE))
+
+        #provide specific non-CDSE endpoint i.e. ceda dhr
+        if opts.get('endpoint') is None:
+            self.endpoint = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+        else:
+            self.endpoint = f"{opts.get('endpoint')}/odata/v1/Products"
+
+        #opts["credentials"] = _get_credentials(options)
+        self.opts = opts
+
         if self._top > MAX_BATCH_SIZE:
             self.log.warning(
                 f"Maximum 'top' value is {MAX_BATCH_SIZE}, setting to {MAX_BATCH_SIZE}"
@@ -198,15 +214,21 @@ class FeatureQuery:  # pylint: disable=too-many-instance-attributes
 
         return self.features[index]
 
-    def _build_query_url(self, include_count: bool = False) -> str:
+    def _build_query_url(self, include_count: bool = False, skip: int = 0 ) -> str:
         """Build query URL with current skip offset"""
         filter_expr = _build_odata_filter(self.collection, self.search_terms)
+       
         params = [
             f"$filter={quote(filter_expr)}",
             f"$top={self._top}",
             # Ordering for consistent pagination
             "$orderby=ContentDate/Start%20asc",
         ]
+
+        #ceda DHR handling skip as next_url not supported in ODATA interface
+        if skip:
+            params.append(f"$skip={skip}")
+
         if self._initial_skip > 0:
             params.append(f"$skip={self._initial_skip}")
         if include_count:
@@ -215,10 +237,17 @@ class FeatureQuery:  # pylint: disable=too-many-instance-attributes
         # (productType, cloudCover, etc.)
         if self.expand_attributes:
             params.append("$expand=Attributes")
-        return (
-            "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
-            f"{'&'.join(params)}"
-        )
+        return (f"{self.endpoint}?{'&'.join(params)}")
+    
+    '''
+    "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
+                f"{'&'.join(params)}"
+                "http://srh-services13.ceda.ac.uk:8081/gss/odata/v1/Products?"
+                            f"{'&'.join(params)}"
+
+                "https://srh-services21.ceda.ac.uk/gss/odata/v1/Products?"
+                                            f"{'&'.join(params)}"
+    '''
 
     def __fetch_features(self) -> None:
         if self.next_url is None:
@@ -229,6 +258,17 @@ class FeatureQuery:  # pylint: disable=too-many-instance-attributes
         attempts = 0
         while attempts < self._max_attempts:
             attempts += 1
+
+            # Always get a new session, credentials might have expired.
+            try:
+                session = _get_credentials(self.opts).get_session()
+            except TokenClientConnectionError:
+                print("Token client connection failed, retrying..")
+                continue
+            except TokenExpiredSignatureError:
+                print("Token signature expired, retrying..")
+                continue
+
             try:
                 assert self.next_url is not None  # for type checker
                 with session.get(self.next_url) as response:
@@ -253,11 +293,32 @@ class FeatureQuery:  # pylint: disable=too-many-instance-attributes
                     elif self.total_results < 0:
                         self.log.error("Total result count not present in response.")
                     next_link = odata_response.get("@odata.nextLink")
-                    self.next_url = (
-                        _strip_odata_count(next_link)
-                        if next_link and self._top > 0
-                        else None
+
+                    #CEDA DHR/GSS not giving next url so need to work out based on total results and skip number
+                    #set skip number equivalent to top
+                    if next_link is not None:
+                        self.next_url = (
+                        
+                            _strip_odata_count(next_link)
+                            if next_link and self._top > 0
+                            else None
+                        
                     )
+                    else:
+                        #DHR's like CEDA do not support the mext_url feature like the CDSE does.  Need to create our own next url using top & skip
+                        #we need to invoke _build_query_url here amended to include self._initial_skip
+                        # keep looping until total skip val does not exceed total_results?
+                        if len(self.features) < self.total_results:
+                            #if len(self.features) <= self.total_results:
+                            #self.next_url =  _strip_odata_count(self._build_query_url(include_count = False, skip = len(self.features) + self._top))
+                            self.next_url =  _strip_odata_count(self._build_query_url(include_count = False, skip = len(self.features)))
+
+                        #elif self.total_results - (len(self.features) + self._top) < self._top:
+                            #self.next_url =  _strip_odata_count(self._build_query_url(include_count = False, skip = (len(self.features) + self._top) - self.total_results))    
+                        
+                        else:
+                            self.next_url = None
+                        
                     return
             except (ChunkedEncodingError, ConnectionResetError, ProtocolError) as e:
                 self.log.warning(e)
@@ -501,6 +562,12 @@ def _build_odata_filter(
 ) -> str:
     """Build $filter expression from search terms."""
     filters = [f"Collection/Name eq '{collection}'"]
+
+    #ceda specialism - collections on UKDHR/CEDA GSS not currently used so need to make it optional
+    filters = []
+    if collection != '':
+        filters.append(f"Collection/Name eq '{collection}'")
+
     for key, value in search_terms.items():
         if key in _INTERNAL_PARAMS:
             continue
@@ -588,6 +655,13 @@ def _to_int(value: SearchTermValue) -> int:
     if isinstance(value, (int, str)) and not isinstance(value, bool):
         return int(value)
     raise ValueError(f"Expected int or str, got {type(value).__name__}: {value!r}")
+
+
+def _get_credentials(options: Dict) -> Credentials:
+    return options.get("credentials") or Credentials(
+        proxies=options.get("proxies", None), username=options.get("username", None), password=options.get("password", None), \
+            openid_configuration_endpoint=options.get("openid_configuration_endpoint", None), clientid=options.get("clientid", None))
+    
 
 
 def _strip_odata_count(url: str) -> str:
